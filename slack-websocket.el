@@ -54,6 +54,7 @@
 
 (defconst slack-api-test-url "https://slack.com/api/api.test")
 (defconst slack-rtm-connect-url "https://slack.com/api/rtm.connect")
+(defconst slack-api-client-userboot-url "https://slack.com/api/client.userBoot")
 
 (defun slack-ws-on-timeout (team-id)
   (let* ((team (slack-team-find team-id))
@@ -564,7 +565,7 @@ TEAM is one of `slack-teams'"
                  team :level 'trace)
       (setq waiting-send
             (cl-remove-if #'(lambda (e) (eq (plist-get e :id)
-                                            (plist-get payload :reply_to)))
+                                       (plist-get payload :reply_to)))
                           waiting-send))
       (slack-log (format "waiting-send: %s" (length waiting-send))
                  team :level 'trace))))
@@ -844,6 +845,7 @@ TEAM is one of `slack-teams'"
                              (list :id (oref this message-id)
                                    :type type
                                    :ids ids))))
+
 (defun slack-authorize (team &optional error-callback success-callback)
   (let ((authorize-request (oref team authorize-request)))
     (if (and authorize-request (not (request-response-done-p authorize-request)))
@@ -877,7 +879,8 @@ TEAM is one of `slack-teams'"
                                         (slack-conversations-list-update team)
                                         ;; (slack-user-list-update team)
                                         (slack-dnd-status-team-info team)
-                                        (slack-download-emoji team #'on-emoji-download)
+                                        (when slack-buffer-emojify
+                                          (slack-download-emoji team #'on-emoji-download))
                                         (slack-command-list-update team)
                                         (slack-usergroup-list-update team)
                                         (slack-update-modeline)))
@@ -903,10 +906,49 @@ TEAM is one of `slack-teams'"
                          :no-retry t))))
           (oset team authorize-request request))))))
 
+(defun slack-conversations-list-update-quick (&optional team)
+  "Like slack-conversations-list-update but uses userboot endpoint.
+This way instead of getting all channels in the workspace, you
+only get the ones you are a member of, which reduces the amount
+of requests that are being made to Slack and therefore lowers the
+risk of getting rate-limited. Especially good for workspaces with
+lots of public channels."
+  (interactive)
+  (let ((team (or team (slack-team-select))))
+    (slack-request
+     (slack-request-create
+      slack-api-client-userboot-url
+      team
+      :success
+      (cl-function
+       (lambda (&key data &allow-other-keys)
+         (let ((channels nil)
+               (groups nil)
+               (ims nil))
+           (cl-loop for c in (plist-get data :channels)
+                    do (cond
+                        ((and
+                          slack-exclude-archived-channels
+                          (eq t (plist-get c :is_archived))))
+                        ((eq t (plist-get c :is_channel))
+                         (push (slack-room-create c 'slack-channel)
+                               channels))
+                        ((eq t (plist-get c :is_im))
+                         (push (slack-room-create c 'slack-im)
+                               ims))
+                        ((eq t (plist-get c :is_group))
+                         (push (slack-room-create c 'slack-group)
+                               groups))))
+           (slack-team-set-channels team channels)
+           (slack-team-set-groups team groups)
+           (slack-team-set-ims team ims))))))))
+
 (defalias 'slack-room-list-update 'slack-conversations-list-update)
 (defun slack-conversations-list-update (&optional team after-success)
   (interactive)
+  (message ">> slack-conversations-list-update running!")
   (let ((team (or team (slack-team-select))))
+    (slack-conversations-list-update-quick team)
     (cl-labels
         ((success (channels groups ims)
                   (slack-team-set-channels team channels)
@@ -926,7 +968,19 @@ TEAM is one of `slack-teams'"
                              team :level 'info)
                   (slack-log "Slack Im List Updated"
                              team :level 'info)))
-      (slack-conversations-list team #'success))))
+      (slack-conversations-list
+       team #'success
+       ;; Do not update public_channel.
+       ;; `slack-conversations-list-update-quick' fetches all joined
+       ;; public channels already.
+
+       ;; TODO: Maybe bind this behavior to a variable.  If non-nil,
+       ;; do not use userBoot and simply get all public channels. Or
+       ;; maybe have multiple values that controls how channels are
+       ;; fetched.
+       '("private_channel"
+         "mpim"
+         "im")))))
 
 (defun slack-im-list-update (&optional team after-success)
   (interactive)

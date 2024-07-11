@@ -289,10 +289,10 @@
         (channels nil)
         (groups nil)
         (ims nil)
-        (types (or types (list "public_channel"
-                               "private_channel"
+        (types (or types (list "private_channel"
                                "mpim"
-                               "im"))))
+                               "im")))
+        (loop-count 0))
     (cl-labels
         ((on-success
           (&key data &allow-other-keys)
@@ -312,12 +312,20 @@
            (slack-if-let*
                ((meta (plist-get data :response_metadata))
                 (next-cursor (plist-get meta :next_cursor))
-                (has-cursor (< 0 (length next-cursor))))
+                (has-cursor (< 0 (length next-cursor)))
+                ;; Do not fetch after page 100. We are going to get
+                ;; rate limited here, according to my experience.
+                (not-too-much (< loop-count 80)))
                (progn
                  (setq cursor next-cursor)
-                 (request))
-             (funcall success-callback
-                      channels groups ims))))
+                 (setq loop-count (1+ loop-count))
+                 (run-at-time
+                  (* 0.3 (log loop-count)) nil
+                  (lambda ()
+                    (slack-log (format ">> Fetching next cursor... Page: %s." loop-count) team :level 'info)
+                    (request))))
+             (progn
+               (funcall success-callback channels groups ims)))))
          (request ()
            (slack-request
             (slack-request-create
@@ -524,7 +532,10 @@
                  (let* ((key (cl-case (eieio-object-class-name room)
                                (slack-channel :channel)
                                (slack-im :im)
-                               (slack-group :group)))
+                               (slack-group
+                                (if (plist-get data :group)
+                                    :group ;; Not quite sure this group property even exists anymore.
+                                  :channel))))
                         (new-room (slack-room-create
                                    (plist-get data key)
                                    (eieio-object-class-name room)))

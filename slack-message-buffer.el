@@ -26,6 +26,7 @@
 
 (require 'cl-lib)
 (require 'eieio)
+(require 'seq)
 (require 'slack-room)
 (require 'slack-util)
 (require 'slack-room-buffer)
@@ -40,6 +41,7 @@
 (require 'slack-mrkdwn)
 (require 'slack-modeline)
 (require 'slack-message-notification)
+(require 'slack-channel)
 
 (defvar slack-completing-read-function)
 (defvar slack-channel-button-keymap
@@ -56,8 +58,8 @@
 
 (defface slack-new-message-marker-face
   '((t (:foreground "#d33682"
-                    :weight bold
-                    :height 0.8)))
+        :weight bold
+        :height 0.8)))
   "Face used to New Message Marker."
   :group 'slack)
 
@@ -96,8 +98,7 @@
   (slack-if-let* ((team (slack-buffer-team this))
                   (room (slack-buffer-room this))
                   (room-name (slack-room-name room team)))
-      (format  "*Slack - %s : %s"
-               (oref team name)
+      (format  "*slack: %s*"
                room-name)))
 
 (cl-defmethod slack-buffer-last-read ((this slack-message-buffer))
@@ -304,9 +305,9 @@
                         (oset this cursor next-cursor)
                         (slack-room-set-messages room messages team)
                         (update-buffer (slack-room-sorted-messages room))))
-      (slack-conversations-view room team
-                                :cursor (oref this cursor)
-                                :after-success #'after-success))))
+      (slack-conversations-history room team
+                                   :cursor (oref this cursor)
+                                   :after-success #'after-success))))
 
 (cl-defmethod slack-buffer-display-pins-list ((this slack-message-buffer))
   (let ((team (slack-buffer-team this))
@@ -630,6 +631,8 @@
   (slack-if-let* ((buf slack-current-buffer))
       (slack-buffer-display-pins-list buf)))
 
+(defalias 'slack-display-user-profile-info #'slack-room-user-select)
+
 (defun slack-room-user-select ()
   (interactive)
   (slack-if-let* ((buf slack-current-buffer))
@@ -669,7 +672,9 @@
                 (cl-loop for team in (list team)
                          append (cl-remove-if
                                  #'(lambda (room)
-                                     (not (slack-room-has-unread-p room team)))
+                                     (or
+                                      (not (slack-room-has-unread-p room team))
+                                      (slack-room-muted-p room team)))
                                  (append (slack-team-ims team)
                                          (slack-team-groups team)
                                          (slack-team-channels team))))
